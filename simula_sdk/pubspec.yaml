@@ -1,0 +1,29 @@
+name: simula_sdk
+description: Simula SSP SDK for Flutter iOS and Android - Production-ready native advertising SDK with zero-flicker loading, caching, and impression tracking
+version: 1.0.0
+homepage: https://github.com/Simula-AI-SDK/flutter-sdk
+repository: https://github.com/Simula-AI-SDK/flutter-sdk
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  webview_flutter: ^4.2.0
+  visibility_detector: ^0.4.0+2
+  dio: ^5.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+# For documentation
+topics:
+  - ads
+  - advertising
+  - sdk
+  - native-ads
+

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simula React SDK Test</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/axios@1.4.0/dist/axios.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .ad-container {
+            border: 1px solid #ccc;
+            margin: 20px 0;
+            padding: 10px;
+            background: #f9f9f9;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+        .error {
+            color: red;
+            text-align: center;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Simula React SDK Test</h1>
+    <p>This demonstrates the zero-flicker loading, caching, and impression tracking features.</p>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Simula Context
+        const SimulaContext = React.createContext(null);
+
+        const useSimula = () => {
+            const context = React.useContext(SimulaContext);
+            if (!context) {
+                throw new Error('useSimula must be used within a SimulaProvider');
+            }
+            return context;
+        };
+
+        // Toggle mock ads (useful for local testing without network)
+        const MOCK_ADS = true;
+
+        // Simula Provider
+        const SimulaProvider = ({ apiKey, children }) => {
+            const [sessionId, setSessionId] = React.useState(null);
+            const [cache] = React.useState(new Map());
+
+            React.useEffect(() => {
+                const createSession = async () => {
+                    try {
+                        const response = await axios.post(
+                            'https://simula-api-701226639755.us-central1.run.app/session/create',
+                            {},
+                            {
+                                headers: {
+                                    'Authorization': `Bearer ${apiKey}`,
+                                },
+                            }
+                        );
+                        setSessionId(response.data.sessionId);
+                        console.log('Session created:', response.data.sessionId);
+                    } catch (error) {
+                        console.error('Failed to create session:', error);
+                    }
+                };
+
+                createSession();
+            }, [apiKey]);
+
+            const value = {
+                sessionId,
+                cache,
+                apiKey,
+            };
+
+            return React.createElement(SimulaContext.Provider, { value }, children);
+        };
+
+        // Native Banner Component
+        const NativeBanner = ({ slot, position, width = '100%', height, onError, onImpression }) => {
+            const { sessionId, cache, apiKey } = useSimula();
+            const [adData, setAdData] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
+            const [error, setError] = React.useState(null);
+            const containerRef = React.useRef(null);
+            const impressionTimerRef = React.useRef(null);
+            const abortControllerRef = React.useRef(null);
+
+            const cacheKey = `${slot}:${position}`;
+
+            const trackImpression = React.useCallback(async (aid) => {
+                // Optimistic UI update: reflect impression immediately
+                try {
+                    onImpression?.();
+                } catch (e) {
+                    console.warn('onImpression handler error', e);
+                }
+
+                // Fire tracking request but don't block the UI update
+                axios.post(
+                    `https://simula-api-701226639755.us-central1.run.app/track/engagement/impression/${aid}`,
+                    {},
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`,
+                        },
+                    }
+                ).then(() => {
+                    console.log('Impression tracked for ad:', aid);
+                }).catch((err) => {
+                    console.error('Failed to track impression (network):', err);
+                });
+            }, [apiKey, onImpression]);
+
+            const handleIntersection = React.useCallback((entries) => {
+                const entry = entries[0];
+                if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+                    if (!impressionTimerRef.current) {
+                        console.log('Ad >=50% visible, starting 1s timer...');
+                        impressionTimerRef.current = setTimeout(() => {
+                            if (adData) {
+                                trackImpression(adData.aid);
+                            }
+                        }, 1000);
+                    }
+                } else {
+                    if (impressionTimerRef.current) {
+                        console.log('Ad <50% visible, resetting timer');
+                        clearTimeout(impressionTimerRef.current);
+                        impressionTimerRef.current = null;
+                    }
+                }
+            }, [adData, trackImpression]);
+
+            React.useEffect(() => {
+                if (!containerRef.current) return;
+
+                const observer = new IntersectionObserver(handleIntersection, {
+                    threshold: [0.5],
+                });
+                observer.observe(containerRef.current);
+
+                return () => {
+                    observer.disconnect();
+                    if (impressionTimerRef.current) {
+                        clearTimeout(impressionTimerRef.current);
+                    }
+                };
+            }, [handleIntersection]);
+
+            const fetchAd = React.useCallback(async () => {
+                if (!sessionId) return;
+
+                // Check cache first
+                const cached = cache.get(cacheKey);
+                if (cached) {
+                    console.log('Using cached ad for', cacheKey);
+                    setAdData(cached.adData);
+                    setLoading(false);
+                    return;
+                }
+
+                // If MOCK_ADS enabled, return a simple image-based ad HTML (simulates real ad)
+                if (MOCK_ADS) {
+                    console.log('Mock fetching ad for', cacheKey);
+                    // simulate network delay
+                    await new Promise((r) => setTimeout(r, 300 + (position * 100)));
+                    const aid = `mock-aid-${slot}-${position}`;
+                    const adHeight = height || 200;
+                    const imgUrl = `https://picsum.photos/seed/${encodeURIComponent(aid)}/600/200`;
+                    const html = `<div style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;">
+                        <a href="#" style="display:block;text-decoration:none;color:inherit">
+                          <img src="${imgUrl}" style="width:100%;height:auto;display:block;border-radius:6px" alt="Mock Ad"/>
+                          <div style=\"padding:8px; font-size:14px; color:#333;\">Sponsored content — ${aid}</div>
+                        </a>
+                      </div>`;
+
+                    const newAdData = { aid, html, height: adHeight };
+                    const cacheEntry = { adData: newAdData, timestamp: Date.now() };
+                    cache.set(cacheKey, cacheEntry);
+                    console.log('Mock ad created and cached:', aid);
+                    setAdData(newAdData);
+                    setLoading(false);
+                    return;
+                }
+
+                abortControllerRef.current = new AbortController();
+
+                try {
+                    console.log('Fetching ad for', cacheKey);
+                    const response = await axios.post(
+                        'https://simula-api-701226639755.us-central1.run.app/render_ad/ssp/native',
+                        {
+                            session_id: sessionId,
+                            slot,
+                            position,
+                        },
+                        {
+                            headers: {
+                                'Authorization': `Bearer ${apiKey}`,
+                            },
+                            signal: abortControllerRef.current.signal,
+                        }
+                    );
+
+                    const aid = response.headers.aid;
+                    const html = response.data;
+                    const adHeight = height || 250;
+
+                    const newAdData = { aid, html, height: adHeight };
+                    const cacheEntry = { adData: newAdData, timestamp: Date.now() };
+                    cache.set(cacheKey, cacheEntry);
+
+                    console.log('Ad fetched and cached:', aid);
+                    setAdData(newAdData);
+                    setLoading(false);
+                } catch (err) {
+                    if (axios.isCancel(err)) return;
+                    console.error('Failed to fetch ad:', err);
+                    const error = err;
+                    setError(error);
+                    onError?.(error);
+                    setLoading(false);
+                }
+            }, [sessionId, slot, position, cache, cacheKey, apiKey, height, onError]);
+
+            React.useEffect(() => {
+                if (sessionId) {
+                    fetchAd();
+                }
+            }, [sessionId, fetchAd]);
+
+            React.useEffect(() => {
+                return () => {
+                    if (abortControllerRef.current) {
+                        abortControllerRef.current.abort();
+                    }
+                };
+            }, []);
+
+            if (error) {
+                return React.createElement('div', { style: { display: 'none' } });
+            }
+
+            const containerStyle = {
+                width: typeof width === 'number' ? `${width}px` : width,
+                minWidth: '130px',
+                height: adData ? `${adData.height}px` : height ? `${height}px` : '250px',
+                position: 'relative',
+                overflow: 'hidden',
+                border: '1px solid #ddd',
+                backgroundColor: '#f0f0f0',
+            };
+
+            return React.createElement('div', { ref: containerRef, style: containerStyle },
+                loading && React.createElement('div', {
+                    style: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }
+                }, 'Loading ad...'),
+                adData && React.createElement('iframe', {
+                    srcDoc: adData.html,
+                    style: { width: '100%', height: '100%', border: 'none' },
+                    title: 'Native Ad'
+                })
+            );
+        };
+
+        // Test App
+        const TestApp = () => {
+            const [impressions, setImpressions] = React.useState(0);
+
+            return React.createElement(SimulaProvider, { apiKey: 'pub_a7f3c92d8b1e4f6fa2d4c1e9b73a5c4e' },
+                React.createElement('div', null,
+                    React.createElement('h2', null, 'Test Feed'),
+                    React.createElement('p', null, 'Scroll down to see ads. Impressions tracked: ', impressions),
+
+                    // Content above first ad
+                    React.createElement('div', { style: { height: '400px', background: '#e0e0e0', padding: '20px', margin: '20px 0' } },
+                        'Content above ad 1 - Scroll down to trigger impression tracking'
+                    ),
+
+                    // First ad
+                    React.createElement('div', { className: 'ad-container' },
+                        React.createElement('h3', null, 'Ad Slot: explore, Position: 0'),
+                        React.createElement(NativeBanner, {
+                            slot: 'explore',
+                            position: 0,
+                            width: '100%',
+                            height: 250,
+                            onError: (error) => console.error('Ad 1 error:', error),
+                            onImpression: () => setImpressions(prev => prev + 1)
+                        })
+                    ),
+
+                    // Content between ads
+                    React.createElement('div', { style: { height: '400px', background: '#e0e0e0', padding: '20px', margin: '20px 0' } },
+                        'Content between ads'
+                    ),
+
+                    // Second ad (same slot:position to test caching)
+                    React.createElement('div', { className: 'ad-container' },
+                        React.createElement('h3', null, 'Ad Slot: explore, Position: 0 (Cached)'),
+                        React.createElement(NativeBanner, {
+                            slot: 'explore',
+                            position: 0,
+                            width: '100%',
+                            height: 250,
+                            onError: (error) => console.error('Ad 2 error:', error),
+                            onImpression: () => setImpressions(prev => prev + 1)
+                        })
+                    ),
+
+                    // Content below
+                    React.createElement('div', { style: { height: '400px', background: '#e0e0e0', padding: '20px', margin: '20px 0' } },
+                        'Content below ads'
+                    )
+                )
+            );
+        };
+
+        // Render app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(TestApp));
+    </script>
+</body>
+</html>
